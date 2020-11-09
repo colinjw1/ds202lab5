@@ -1,0 +1,178 @@
+---
+title: "Team.Rmd"
+author: "Colin Willenborg"
+date: "11/4/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(ggrepel)
+library(plotly)
+library(maps)
+library("tools")
+library("sf")
+acc <- read.csv("https://raw.githubusercontent.com/xdaiISU/ds202materials/master/hwlabs/fars2017/accident.csv", stringsAsFactors = FALSE)
+person <- read.csv("https://raw.githubusercontent.com/xdaiISU/ds202materials/master/hwlabs/fars2017/person.csv", stringsAsFactors = FALSE)
+geoLocation <- readxl::read_xlsx("./FRPP_GLC_-_United_StatesSep292020.xlsx")
+head(geoLocation)
+```
+
+## Question 1:
+
+```{r}
+accWeekDay <- acc %>% 
+  group_by(DAY_WEEK) %>% 
+  summarize(total = sum(DAY_WEEK, na.rm = TRUE))
+str(accWeekDay)
+```
+
+The day with the most crashes is 7 or as the manual states Saturday.
+
+## Question 2:
+
+```{r}
+accFatalities <- person %>% 
+  filter(INJ_SEV == 4) 
+str(accFatalities)
+```
+
+## Question 3:
+
+```{r}
+stateSafety <- person %>% 
+  select(STATE, COUNTY, INJ_SEV, MAKE) %>% 
+  filter(INJ_SEV == 4)
+temp <- stateSafety %>% 
+  group_by(STATE, MAKE) %>% 
+  summarize(total = sum(INJ_SEV)) %>% 
+  arrange(desc(total)) 
+temp <- temp[complete.cases(temp),]
+temp <- temp %>% 
+  group_by(STATE) %>% slice(1)
+```
+
+## Question 4:
+
+```{r}
+states <- map_data("state")
+makeCode <- read.csv("./makeCodes.csv")
+geoLocation$`State Code` <- as.numeric(geoLocation$`State Code`)
+states_temp <- inner_join(geoLocation, temp, by=c("State Code" = "STATE"))
+states_temp <- states_temp %>% 
+  select('State Name', MAKE, total) %>% 
+  mutate('State Name' = tolower(states_temp$'State Name'))
+
+states_temp <- states_temp[!duplicated(states_temp),]
+
+states_join <- right_join(states_temp, states, by = c("State Name" = "region"))
+
+states_join <- states_join[!duplicated(states_join$`State Name`, states_join$MAKE, states_join$total),]
+
+temp3 <- left_join(states, states_join, by=c("region" = "State Name"))
+cnames <- aggregate(cbind(long.x, lat.x) ~ region, data=temp3, 
+                    FUN=function(x)mean(range(x)))
+
+temp4 <- left_join(states_join, cnames, by=c("State Name" = "region"))
+
+temp4 <- inner_join(temp4, makeCode, by=c("MAKE" = "Codes"))
+
+states %>% ggplot(aes(x=long, y=lat, group=group)) +
+  geom_polygon(aes(group=group), fill = NA, colour = "grey60") + coord_map() + 
+  geom_text(data = temp4, aes(label = Make, x = long.x, y = lat.x, size=1))+ ylab("Lat") + xlab("Long") + ggtitle("Most Dangerous Make per State")
+```
+
+## Question 5: 
+
+```{r}
+join_state_person <- inner_join(acc, person)
+str(join_state_person)
+```
+
+## Question 6:
+
+```{r}
+days_week <- readxl::read_xlsx("./days_week.xlsx")
+accident_sex <- join_state_person %>% 
+  group_by(DAY_WEEK, HOUR, SEX) %>% 
+  summarize(total = sum(DAY_WEEK, HOUR, SEX)) %>% 
+  filter((SEX == 1 | SEX == 2) & HOUR != 99) %>% 
+  mutate(SEX = ifelse(SEX == 1, 'M', 'F'))
+accident_sex <- left_join(accident_sex, days_week, by=c("DAY_WEEK" = "Code"))
+accident_sex
+accident_sex %>% ggplot(aes(x=HOUR, y = total, fill=SEX)) + geom_bar(stat="identity") + facet_wrap(~Day_Week) + ylab("Total") + xlab("Hour") + ggtitle("People in Accidents by Day and Gender")
+```
+This group of graphs shows that the most dangerous days are Friday and Saturday and on all days and all hours it is more men than women that are getting in fatal car accidents. 
+
+## Question 7: 
+
+```{r}
+accidents_county <- join_state_person %>% 
+  group_by(STATE, COUNTY, INJ_SEV) %>% 
+  filter(INJ_SEV == 4) %>% 
+  summarize(total = sum(INJ_SEV))
+
+county_map <- map_data("county")
+
+county_code <- geoLocation %>% 
+  select('County Name', 'County Code', 'State Name', 'State Code') %>% 
+  mutate('County Name' = tolower(geoLocation$`County Name`)) %>% 
+  mutate('State Name' = tolower(geoLocation$`State Name`))
+
+county_map <- right_join(county_map, county_code, by=c("region" = "State Name", "subregion" = "County Name"))
+
+county_map <- county_map %>% 
+  mutate("County Code" = as.numeric(county_map$`County Code`)) %>% 
+  mutate("State Code" = as.numeric(county_map$`State Code`))
+
+county_map <- inner_join(county_map, accidents_county, by=c("County Code" = "COUNTY", "State Code" = "STATE"))
+
+county_map <- county_map %>% 
+  mutate(total.x = ifelse(is.na(total), 0, total))
+
+county_map %>% ggplot(aes(x=long, y=lat, fill=total.x)) + geom_polygon(aes(group = group, fill=total.x)) + coord_map()
+```
+
+The graph shows that the more populated areas like Texas and California have the most car accidents per county.
+
+
+## Question 8: 
+
+```{r}
+weather <- acc %>% 
+  filter((MONTH == 06 & DAY >= 21) | MONTH == 8 | (MONTH == 9 & DAY < 23) | (MONTH == 12 & DAY > 20) | MONTH == 1 | MONTH == 2 | (MONTH == 3 & DAY == 7)) %>% 
+  mutate(Season = ifelse((MONTH == 06 & DAY >= 21) | MONTH == 8 | (MONTH == 9 & DAY < 23), 'Summer', 'Winter'))
+
+weather %>% group_by(Season) %>% 
+  count(Season)
+
+weather_states <- weather %>% 
+  group_by(STATE, Season) %>%
+  count(Season)
+
+weather_states <- weather_states %>% 
+  group_by(STATE) %>% 
+  arrange(desc(n)) %>% 
+  slice(1)
+
+Lat_long_list <- temp4 %>% 
+  select(`State Name`, long.x, lat.x)
+
+weather_states <- left_join(weather_states, geoLocation, by=c("STATE" = "State Code"))
+
+weather_states <- weather_states %>% group_by(`State Name`) %>% 
+  slice(1) %>% 
+  select(STATE, Season, n, `State Name`) %>% 
+  mutate(STATE = tolower(`State Name`))
+
+weather_states <- inner_join(weather_states, Lat_long_list, by=c("STATE" = "State Name"))
+
+states %>% ggplot(aes(x=long, y=lat)) +
+  geom_polygon(aes(group=group), fill = NA, colour = "grey60") + coord_map() + 
+  geom_text(data = weather_states, aes(label = Season, x = long.x, y = lat.x, size=1)) + ylab("Lat") + xlab("Long") + ggtitle("Accidents by Season and State") 
+```
+The maps and table show that the summer is the more dangerous month overall for the entire US. When we look at the graph though we see that the winter months are the most dangerous in the southern states and the summer is the most dangerous in most northern states. This could be for a multitude of reasons but one guess is that the summer in the northern states is similar to the weather the southern states experience and that is the time most people travel and take advantage of the good weather.
+
